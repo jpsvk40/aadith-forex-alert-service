@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float, DateTime, text
+    create_engine, Column, Integer, String, Float, DateTime, and_, func
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
@@ -50,14 +50,13 @@ def init_db():
 
 
 def _last_signal(db: Session, pair: str, timeframe: str, strategy_version: int) -> Optional[str]:
-    """Return the most recent non-HOLD signal for this pair+timeframe+strategy_version."""
+    """Return the most recent signal state for this pair+timeframe+strategy_version."""
     row = (
         db.query(SignalLog.signal)
         .filter(
             SignalLog.pair == pair,
             SignalLog.timeframe == timeframe,
             SignalLog.strategy_version == strategy_version,
-            SignalLog.signal != "HOLD",
         )
         .order_by(SignalLog.timestamp.desc())
         .first()
@@ -68,7 +67,7 @@ def _last_signal(db: Session, pair: str, timeframe: str, strategy_version: int) 
 def should_suppress(pair: str, timeframe: str, result: SignalResult) -> bool:
     """
     Returns True if this signal should be suppressed (duplicate in same direction).
-    HOLD signals are never suppressed but are also not used as dedup anchors.
+    HOLD signals are never suppressed, but a logged HOLD resets duplicate suppression.
     """
     if result.signal == "HOLD":
         return False  # always allow HOLD through to DB (for audit), just don't Telegram it
@@ -121,13 +120,30 @@ def recent_signals(limit: int = 50) -> list[dict]:
 def pairs_status() -> list[dict]:
     """Latest signal per pair+timeframe combination."""
     with SessionLocal() as db:
-        result = db.execute(text("""
-            SELECT DISTINCT ON (pair, timeframe)
-                pair, timeframe, signal, entry_price, rsi, ema9, ema21, timestamp
-            FROM signal_logs
-            ORDER BY pair, timeframe, timestamp DESC
-        """)).mappings().all()
-        return [dict(r) for r in result]
+        latest_per_pair = (
+            db.query(
+                SignalLog.pair.label("pair"),
+                SignalLog.timeframe.label("timeframe"),
+                func.max(SignalLog.timestamp).label("latest_timestamp"),
+            )
+            .group_by(SignalLog.pair, SignalLog.timeframe)
+            .subquery()
+        )
+
+        rows = (
+            db.query(SignalLog)
+            .join(
+                latest_per_pair,
+                and_(
+                    SignalLog.pair == latest_per_pair.c.pair,
+                    SignalLog.timeframe == latest_per_pair.c.timeframe,
+                    SignalLog.timestamp == latest_per_pair.c.latest_timestamp,
+                ),
+            )
+            .order_by(SignalLog.pair.asc(), SignalLog.timeframe.asc())
+            .all()
+        )
+        return [_row_to_dict(row) for row in rows]
 
 
 def alerts_stats() -> dict:

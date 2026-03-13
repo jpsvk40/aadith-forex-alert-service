@@ -4,6 +4,7 @@ Starts both the FastAPI server (uvicorn, non-blocking) and the APScheduler poll 
 """
 
 import logging
+import os
 import threading
 import uvicorn
 
@@ -19,14 +20,16 @@ logger = logging.getLogger(__name__)
 
 
 def _run_api():
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=8000, log_level="warning")
+    port = int(os.getenv("PORT", "8000"))
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=port, log_level="warning")
 
 
 if __name__ == "__main__":
+    port = int(os.getenv("PORT", "8000"))
     logger.info("Initialising database...")
     init_db()
 
-    logger.info("Starting FastAPI on :8000...")
+    logger.info("Starting FastAPI on :%d...", port)
     api_thread = threading.Thread(target=_run_api, daemon=True)
     api_thread.start()
 
