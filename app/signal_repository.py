@@ -8,7 +8,7 @@ Incrementing STRATEGY_VERSION in .env resets suppression for all pairs.
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy import (
@@ -38,6 +38,28 @@ class SignalLog(Base):
     ema21 = Column(Float, nullable=False)
     strategy_version = Column(Integer, nullable=False)
     telegram_sent = Column(Integer, default=0)  # 0/1 bool
+
+
+class SignalOutcome(Base):
+    __tablename__ = "signal_outcomes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    signal_log_id = Column(Integer, nullable=False, unique=True)
+    pair = Column(String(20), nullable=False)
+    timeframe = Column(String(10), nullable=False)
+    signal = Column(String(10), nullable=False)
+    entry_price = Column(Float, nullable=False)
+    entry_timestamp = Column(DateTime(timezone=True), nullable=False)
+    exit_price = Column(Float, nullable=True)
+    exit_timestamp = Column(DateTime(timezone=True), nullable=True)
+    outcome = Column(String(10), nullable=True)
+    return_pct = Column(Float, nullable=True)
+    bars_held = Column(Integer, nullable=True)
+    evaluation_rule = Column(String(50), nullable=False)
+    strategy_version = Column(Integer, nullable=False)
+    status = Column(String(10), nullable=False, default="open")
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
 
 
 engine = create_engine(settings.database_url, echo=False)
@@ -104,6 +126,86 @@ def log_signal(
             row.signal, pair, timeframe, row.entry_price, row.rsi,
         )
         return row
+
+
+def create_signal_outcome(signal_log: SignalLog, evaluation_bars: int) -> None:
+    if signal_log.signal not in {"BUY", "SELL"}:
+        return
+
+    now = datetime.now(timezone.utc)
+    rule = f"fixed_bars:{evaluation_bars}"
+    with SessionLocal() as db:
+        existing = (
+            db.query(SignalOutcome.id)
+            .filter(SignalOutcome.signal_log_id == signal_log.id)
+            .first()
+        )
+        if existing:
+            return
+
+        outcome = SignalOutcome(
+            signal_log_id=signal_log.id,
+            pair=signal_log.pair,
+            timeframe=signal_log.timeframe,
+            signal=signal_log.signal,
+            entry_price=signal_log.entry_price,
+            entry_timestamp=signal_log.timestamp,
+            exit_price=None,
+            exit_timestamp=None,
+            outcome=None,
+            return_pct=None,
+            bars_held=None,
+            evaluation_rule=rule,
+            strategy_version=signal_log.strategy_version,
+            status="open",
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(outcome)
+        db.commit()
+
+
+def open_outcomes() -> list[SignalOutcome]:
+    with SessionLocal() as db:
+        return (
+            db.query(SignalOutcome)
+            .filter(SignalOutcome.status == "open")
+            .order_by(SignalOutcome.entry_timestamp.asc())
+            .all()
+        )
+
+
+def resolve_signal_outcome(
+    outcome_id: int,
+    exit_price: float,
+    exit_timestamp: datetime,
+    bars_held: int,
+) -> None:
+    with SessionLocal() as db:
+        row = db.query(SignalOutcome).filter(SignalOutcome.id == outcome_id).first()
+        if not row or row.status != "open":
+            return
+
+        if row.signal == "BUY":
+            return_pct = ((exit_price - row.entry_price) / row.entry_price) * 100
+        else:
+            return_pct = ((row.entry_price - exit_price) / row.entry_price) * 100
+
+        if return_pct > 0:
+            outcome_value = "win"
+        elif return_pct < 0:
+            outcome_value = "loss"
+        else:
+            outcome_value = "neutral"
+
+        row.exit_price = exit_price
+        row.exit_timestamp = exit_timestamp
+        row.outcome = outcome_value
+        row.return_pct = return_pct
+        row.bars_held = bars_held
+        row.status = "resolved"
+        row.updated_at = datetime.now(timezone.utc)
+        db.commit()
 
 
 def recent_signals(limit: int = 50) -> list[dict]:
@@ -186,6 +288,199 @@ def signals_summary() -> list[dict]:
             "age_seconds": age_seconds,
         })
     return summary_rows
+
+
+def _day_bounds(target_date: date) -> tuple[datetime, datetime]:
+    start = datetime.combine(target_date, time.min, tzinfo=timezone.utc)
+    end = start + timedelta(days=1)
+    return start, end
+
+
+def _daily_counts(start: datetime, end: datetime) -> dict:
+    with SessionLocal() as db:
+        total_signals = db.query(SignalLog).filter(
+            SignalLog.timestamp >= start,
+            SignalLog.timestamp < end,
+        ).count()
+        buy_signals = db.query(SignalLog).filter(
+            SignalLog.timestamp >= start,
+            SignalLog.timestamp < end,
+            SignalLog.signal == "BUY",
+        ).count()
+        sell_signals = db.query(SignalLog).filter(
+            SignalLog.timestamp >= start,
+            SignalLog.timestamp < end,
+            SignalLog.signal == "SELL",
+        ).count()
+        telegram_sent = db.query(SignalLog).filter(
+            SignalLog.timestamp >= start,
+            SignalLog.timestamp < end,
+            SignalLog.telegram_sent == 1,
+        ).count()
+        outcome_rows = db.query(SignalOutcome).filter(
+            SignalOutcome.entry_timestamp >= start,
+            SignalOutcome.entry_timestamp < end,
+        ).all()
+
+    return _build_performance_dict(
+        start.date().isoformat(),
+        total_signals=total_signals,
+        buy_signals=buy_signals,
+        sell_signals=sell_signals,
+        telegram_sent=telegram_sent,
+        outcomes=outcome_rows,
+    )
+
+
+def performance_daily(target_date: Optional[date] = None) -> dict:
+    target = target_date or datetime.now(timezone.utc).date()
+    start, end = _day_bounds(target)
+    return _daily_counts(start, end)
+
+
+def performance_summary(start_date: date, end_date: date) -> dict:
+    start, _ = _day_bounds(start_date)
+    _, end = _day_bounds(end_date)
+
+    with SessionLocal() as db:
+        signal_rows = db.query(SignalLog).filter(
+            SignalLog.timestamp >= start,
+            SignalLog.timestamp < end,
+        ).all()
+        outcome_rows = db.query(SignalOutcome).filter(
+            SignalOutcome.entry_timestamp >= start,
+            SignalOutcome.entry_timestamp < end,
+        ).all()
+
+    total_signals = len(signal_rows)
+    buy_signals = sum(1 for row in signal_rows if row.signal == "BUY")
+    sell_signals = sum(1 for row in signal_rows if row.signal == "SELL")
+    telegram_sent = sum(1 for row in signal_rows if row.telegram_sent == 1)
+    metrics = _build_performance_dict(
+        start_date.isoformat(),
+        total_signals=total_signals,
+        buy_signals=buy_signals,
+        sell_signals=sell_signals,
+        telegram_sent=telegram_sent,
+        outcomes=outcome_rows,
+    )
+
+    pair_rows = _performance_group_rows(outcome_rows, key="pair")
+    timeframe_rows = _performance_group_rows(outcome_rows, key="timeframe")
+    metrics["range"] = {"from": start_date.isoformat(), "to": end_date.isoformat()}
+    metrics["best_pair"] = _best_key(pair_rows)
+    metrics["worst_pair"] = _worst_key(pair_rows)
+    metrics["best_timeframe"] = _best_key(timeframe_rows)
+    metrics["worst_timeframe"] = _worst_key(timeframe_rows)
+    return metrics
+
+
+def performance_by_pair(start_date: date, end_date: date) -> list[dict]:
+    start, _ = _day_bounds(start_date)
+    _, end = _day_bounds(end_date)
+    with SessionLocal() as db:
+        rows = db.query(SignalOutcome).filter(
+            SignalOutcome.entry_timestamp >= start,
+            SignalOutcome.entry_timestamp < end,
+        ).all()
+    return _performance_group_rows(rows, key="pair")
+
+
+def performance_by_timeframe(start_date: date, end_date: date) -> list[dict]:
+    start, _ = _day_bounds(start_date)
+    _, end = _day_bounds(end_date)
+    with SessionLocal() as db:
+        rows = db.query(SignalOutcome).filter(
+            SignalOutcome.entry_timestamp >= start,
+            SignalOutcome.entry_timestamp < end,
+        ).all()
+    return _performance_group_rows(rows, key="timeframe")
+
+
+def _build_performance_dict(
+    period_label: str,
+    *,
+    total_signals: int,
+    buy_signals: int,
+    sell_signals: int,
+    telegram_sent: int,
+    outcomes: list[SignalOutcome],
+) -> dict:
+    resolved = [row for row in outcomes if row.status == "resolved"]
+    wins = sum(1 for row in resolved if row.outcome == "win")
+    losses = sum(1 for row in resolved if row.outcome == "loss")
+    expired = sum(1 for row in resolved if row.outcome == "expired")
+    neutral = sum(1 for row in resolved if row.outcome == "neutral")
+    open_signals = sum(1 for row in outcomes if row.status == "open")
+    resolved_non_expired = [row for row in resolved if row.outcome in {"win", "loss", "neutral"}]
+    denominator = wins + losses
+    avg_return = None
+    if resolved_non_expired:
+        avg_return = round(
+            sum((row.return_pct or 0.0) for row in resolved_non_expired) / len(resolved_non_expired),
+            4,
+        )
+
+    return {
+        "date": period_label,
+        "total_signals": total_signals,
+        "buy_signals": buy_signals,
+        "sell_signals": sell_signals,
+        "hold_signals": total_signals - buy_signals - sell_signals,
+        "telegram_sent": telegram_sent,
+        "resolved_signals": len(resolved),
+        "wins": wins,
+        "losses": losses,
+        "expired": expired,
+        "neutral": neutral,
+        "open_signals": open_signals,
+        "win_rate": round((wins / denominator) * 100, 2) if denominator else None,
+        "avg_return_pct": avg_return,
+    }
+
+
+def _performance_group_rows(rows: list[SignalOutcome], key: str) -> list[dict]:
+    grouped: dict[str, list[SignalOutcome]] = {}
+    for row in rows:
+        grouped.setdefault(getattr(row, key), []).append(row)
+
+    items: list[dict] = []
+    for label, group_rows in grouped.items():
+        resolved = [row for row in group_rows if row.status == "resolved"]
+        wins = sum(1 for row in resolved if row.outcome == "win")
+        losses = sum(1 for row in resolved if row.outcome == "loss")
+        denominator = wins + losses
+        resolved_with_return = [row for row in resolved if row.return_pct is not None]
+        items.append({
+            key: label,
+            "total_signals": len(group_rows),
+            "resolved_signals": len(resolved),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round((wins / denominator) * 100, 2) if denominator else None,
+            "avg_return_pct": round(
+                sum((row.return_pct or 0.0) for row in resolved_with_return) / len(resolved_with_return),
+                4,
+            ) if resolved_with_return else None,
+        })
+
+    return sorted(items, key=lambda item: (item["win_rate"] is None, -(item["win_rate"] or 0), item[key]))
+
+
+def _best_key(items: list[dict]) -> Optional[str]:
+    ranked = [item for item in items if item.get("win_rate") is not None]
+    if not ranked:
+        return None
+    first = ranked[0]
+    return first.get("pair") or first.get("timeframe")
+
+
+def _worst_key(items: list[dict]) -> Optional[str]:
+    ranked = [item for item in items if item.get("win_rate") is not None]
+    if not ranked:
+        return None
+    last = sorted(ranked, key=lambda item: ((item["win_rate"] or 0), item.get("pair") or item.get("timeframe")))[0]
+    return last.get("pair") or last.get("timeframe")
 
 
 def _row_to_dict(row: SignalLog) -> dict:

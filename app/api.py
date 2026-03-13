@@ -4,6 +4,7 @@ Run alongside the scheduler via main.py.
 """
 
 from datetime import datetime, timezone
+from datetime import date as date_type
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,15 +15,20 @@ from app.signal_repository import (
     pairs_status,
     alerts_stats,
     signals_summary,
+    performance_daily,
+    performance_summary,
+    performance_by_pair,
+    performance_by_timeframe,
 )
 from app.data_provider import check_provider_health
+from app.reporting import daily_report_preview, send_daily_report
 
 app = FastAPI(title="Forex Alert Service", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # tighten to stock dashboard origin in production
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -74,6 +80,55 @@ class RootResponse(BaseModel):
     service: str
     status: str
     docs_url: str
+
+
+class PerformanceDailyResponse(BaseModel):
+    date: str
+    total_signals: int
+    buy_signals: int
+    sell_signals: int
+    hold_signals: int
+    telegram_sent: int
+    resolved_signals: int
+    wins: int
+    losses: int
+    expired: int
+    neutral: int
+    open_signals: int
+    win_rate: Optional[float]
+    avg_return_pct: Optional[float]
+
+
+class PerformanceSummaryResponse(PerformanceDailyResponse):
+    range: dict
+    best_pair: Optional[str]
+    worst_pair: Optional[str]
+    best_timeframe: Optional[str]
+    worst_timeframe: Optional[str]
+
+
+class PerformanceGroupItem(BaseModel):
+    total_signals: int
+    resolved_signals: int
+    wins: int
+    losses: int
+    win_rate: Optional[float]
+    avg_return_pct: Optional[float]
+    pair: Optional[str] = None
+    timeframe: Optional[str] = None
+
+
+class DailyReportPreviewResponse(BaseModel):
+    date: str
+    headline: str
+    summary_lines: list[str]
+    metrics: PerformanceDailyResponse
+
+
+class DailyReportSendResponse(BaseModel):
+    ok: bool
+    date: str
+    sent_to: str
 
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
@@ -128,3 +183,56 @@ def get_providers_status():
     Separate from /health: /health = is this service up, /providers/status = is data flowing.
     """
     return check_provider_health()
+
+
+@app.get("/performance/daily", response_model=PerformanceDailyResponse)
+def get_performance_daily(date: Optional[date_type] = None):
+    return performance_daily(date)
+
+
+@app.get("/performance/summary", response_model=PerformanceSummaryResponse)
+def get_performance_summary(
+    from_date: Optional[date_type] = None,
+    to_date: Optional[date_type] = None,
+):
+    today = datetime.now(timezone.utc).date()
+    start = from_date or today
+    end = to_date or today
+    return performance_summary(start, end)
+
+
+@app.get("/performance/by-pair")
+def get_performance_by_pair(
+    from_date: Optional[date_type] = None,
+    to_date: Optional[date_type] = None,
+):
+    today = datetime.now(timezone.utc).date()
+    start = from_date or today
+    end = to_date or today
+    return {"items": performance_by_pair(start, end)}
+
+
+@app.get("/performance/by-timeframe")
+def get_performance_by_timeframe(
+    from_date: Optional[date_type] = None,
+    to_date: Optional[date_type] = None,
+):
+    today = datetime.now(timezone.utc).date()
+    start = from_date or today
+    end = to_date or today
+    return {"items": performance_by_timeframe(start, end)}
+
+
+@app.get("/reports/daily/preview", response_model=DailyReportPreviewResponse)
+def get_daily_report_preview(date: Optional[date_type] = None):
+    return daily_report_preview(date)
+
+
+@app.post("/reports/daily/send", response_model=DailyReportSendResponse)
+def post_daily_report_send(date: Optional[date_type] = None):
+    target = date or datetime.now(timezone.utc).date()
+    return DailyReportSendResponse(
+        ok=send_daily_report(target),
+        date=target.isoformat(),
+        sent_to="telegram",
+    )

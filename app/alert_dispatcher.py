@@ -40,11 +40,25 @@ def send_alert(pair: str, timeframe: str, signal_result) -> bool:
         "text": _build_message(pair, timeframe, signal_result),
         "parse_mode": "Markdown",
     }
+    return _send_payload(payload, context=f"{signal_result.signal} {pair} {timeframe}")
+
+
+def send_text_message(text: str) -> bool:
+    payload = {
+        "chat_id": settings.telegram_chat_id,
+        "text": text,
+        "parse_mode": "Markdown",
+    }
+    return _send_payload(payload, context="daily report")
+
+
+def _send_payload(payload: dict, context: str) -> bool:
+    url = TELEGRAM_API.format(token=settings.telegram_bot_token)
     try:
         resp = httpx.post(url, json=payload, timeout=10)
         resp.raise_for_status()
-        logger.info("Telegram alert sent: %s %s %s", signal_result.signal, pair, timeframe)
+        logger.info("Telegram message sent: %s", context)
         return True
     except Exception as exc:
-        logger.error("Telegram send failed [%s %s]: %s", pair, timeframe, exc)
+        logger.error("Telegram send failed [%s]: %s", context, exc)
         return False

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
 
     # Strategy
     strategy_version: int = 1
+    evaluation_bars_default: int = 3
+    daily_report_hour_utc: int = 23
+    daily_report_minute_utc: int = 55
 
     @field_validator("pairs", "timeframes", mode="before")
     @classmethod
