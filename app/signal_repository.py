@@ -180,11 +180,11 @@ def resolve_signal_outcome(
     exit_price: float,
     exit_timestamp: datetime,
     bars_held: int,
-) -> None:
+) -> Optional[dict]:
     with SessionLocal() as db:
         row = db.query(SignalOutcome).filter(SignalOutcome.id == outcome_id).first()
         if not row or row.status != "open":
-            return
+            return None
 
         if row.signal == "BUY":
             return_pct = ((exit_price - row.entry_price) / row.entry_price) * 100
@@ -206,6 +206,16 @@ def resolve_signal_outcome(
         row.status = "resolved"
         row.updated_at = datetime.now(timezone.utc)
         db.commit()
+        return {
+            "pair": row.pair,
+            "timeframe": row.timeframe,
+            "signal": row.signal,
+            "entry_price": row.entry_price,
+            "exit_price": row.exit_price,
+            "outcome": row.outcome,
+            "return_pct": row.return_pct,
+            "bars_held": row.bars_held,
+        }
 
 
 def recent_signals(limit: int = 50) -> list[dict]:
@@ -266,6 +276,8 @@ def signals_summary() -> list[dict]:
     rows = pairs_status()
     summary_rows = []
     for r in rows:
+        if r["signal"] == "HOLD":
+            continue
         ts = r.get("timestamp")
         if ts:
             if isinstance(ts, str):
@@ -298,10 +310,6 @@ def _day_bounds(target_date: date) -> tuple[datetime, datetime]:
 
 def _daily_counts(start: datetime, end: datetime) -> dict:
     with SessionLocal() as db:
-        total_signals = db.query(SignalLog).filter(
-            SignalLog.timestamp >= start,
-            SignalLog.timestamp < end,
-        ).count()
         buy_signals = db.query(SignalLog).filter(
             SignalLog.timestamp >= start,
             SignalLog.timestamp < end,
@@ -322,6 +330,7 @@ def _daily_counts(start: datetime, end: datetime) -> dict:
             SignalOutcome.entry_timestamp < end,
         ).all()
 
+    total_signals = buy_signals + sell_signals
     return _build_performance_dict(
         start.date().isoformat(),
         total_signals=total_signals,
@@ -355,6 +364,7 @@ def performance_summary(start_date: date, end_date: date) -> dict:
     total_signals = len(signal_rows)
     buy_signals = sum(1 for row in signal_rows if row.signal == "BUY")
     sell_signals = sum(1 for row in signal_rows if row.signal == "SELL")
+    total_signals = buy_signals + sell_signals
     telegram_sent = sum(1 for row in signal_rows if row.telegram_sent == 1)
     metrics = _build_performance_dict(
         start_date.isoformat(),
@@ -426,7 +436,7 @@ def _build_performance_dict(
         "total_signals": total_signals,
         "buy_signals": buy_signals,
         "sell_signals": sell_signals,
-        "hold_signals": total_signals - buy_signals - sell_signals,
+        "hold_signals": 0,
         "telegram_sent": telegram_sent,
         "resolved_signals": len(resolved),
         "wins": wins,

@@ -23,7 +23,7 @@ from app.signal_repository import (
     open_outcomes,
     resolve_signal_outcome,
 )
-from app.alert_dispatcher import send_alert
+from app.alert_dispatcher import send_alert, send_outcome_alert
 
 logger = logging.getLogger(__name__)
 
@@ -81,12 +81,23 @@ def _resolve_open_outcomes():
             exit_timestamp = future.index[bars - 1].to_pydatetime()
             if exit_timestamp.tzinfo is None:
                 exit_timestamp = exit_timestamp.replace(tzinfo=timezone.utc)
-            resolve_signal_outcome(
+            resolved = resolve_signal_outcome(
                 outcome.id,
                 exit_price=float(exit_candle["close"]),
                 exit_timestamp=exit_timestamp,
                 bars_held=bars,
             )
+            if resolved:
+                send_outcome_alert(
+                    pair=resolved["pair"],
+                    timeframe=resolved["timeframe"],
+                    signal=resolved["signal"],
+                    entry_price=resolved["entry_price"],
+                    exit_price=resolved["exit_price"],
+                    outcome=resolved["outcome"],
+                    return_pct=resolved["return_pct"],
+                    bars_held=resolved["bars_held"],
+                )
         except Exception as exc:
             logger.error(
                 "runner._resolve_open_outcomes failed [%s %s #%s]: %s",

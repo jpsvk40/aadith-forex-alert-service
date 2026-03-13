@@ -17,12 +17,8 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 def _build_message(pair: str, timeframe: str, signal_result) -> str:
     emoji = "🟢" if signal_result.signal == "BUY" else "🔴"
     return (
-        f"{emoji} *{signal_result.signal}* — {pair} ({timeframe})\n"
-        f"Price: `{signal_result.entry_price:.5f}`\n"
-        f"RSI: `{signal_result.rsi:.1f}`\n"
-        f"EMA9: `{signal_result.ema9:.5f}`\n"
-        f"EMA21: `{signal_result.ema21:.5f}`\n"
-        f"Strategy v{signal_result.strategy_version}"
+        f"{emoji} *{signal_result.signal}* - {pair} ({timeframe})\n"
+        f"Entry: `{signal_result.entry_price:.5f}`"
     )
 
 
@@ -50,6 +46,32 @@ def send_text_message(text: str) -> bool:
         "parse_mode": "Markdown",
     }
     return _send_payload(payload, context="daily report")
+
+
+def send_outcome_alert(
+    pair: str,
+    timeframe: str,
+    signal: str,
+    entry_price: float,
+    exit_price: float,
+    outcome: str,
+    return_pct: float,
+    bars_held: int,
+) -> bool:
+    emoji = "✅" if outcome == "win" else "❌" if outcome == "loss" else "⚪"
+    payload = {
+        "chat_id": settings.telegram_chat_id,
+        "text": (
+            f"{emoji} *{outcome.upper()}* - {pair} ({timeframe})\n"
+            f"Signal: `{signal}`\n"
+            f"Entry: `{entry_price:.5f}`\n"
+            f"Exit: `{exit_price:.5f}`\n"
+            f"Return: `{return_pct:.3f}%`\n"
+            f"Bars held: `{bars_held}`"
+        ),
+        "parse_mode": "Markdown",
+    }
+    return _send_payload(payload, context=f"outcome {outcome} {pair} {timeframe}")
 
 
 def _send_payload(payload: dict, context: str) -> bool:

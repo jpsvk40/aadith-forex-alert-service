@@ -9,7 +9,7 @@ def daily_report_preview(target_date: date | None = None) -> dict:
     metrics = performance_daily(target)
     headline = "Forex Daily Summary"
     summary_lines = [
-        f"{metrics['total_signals']} signals generated",
+        f"{metrics['total_signals']} alerts generated",
         f"{metrics['resolved_signals']} resolved, {metrics['wins']} wins, {metrics['losses']} losses",
         f"Win rate: {metrics['win_rate']}%" if metrics["win_rate"] is not None else "Win rate: n/a",
         f"Open signals: {metrics['open_signals']}",
@@ -28,8 +28,8 @@ def send_daily_report(target_date: date | None = None) -> bool:
     message = "\n".join([
         f"*{preview['headline']}*",
         f"Date: `{preview['date']}`",
-        f"Signals: `{metrics['total_signals']}`",
-        f"BUY / SELL / HOLD: `{metrics['buy_signals']}` / `{metrics['sell_signals']}` / `{metrics['hold_signals']}`",
+        f"Alerts: `{metrics['total_signals']}`",
+        f"BUY / SELL: `{metrics['buy_signals']}` / `{metrics['sell_signals']}`",
         f"Resolved: `{metrics['resolved_signals']}`",
         f"Wins / Losses / Neutral: `{metrics['wins']}` / `{metrics['losses']}` / `{metrics['neutral']}`",
         f"Win rate: `{metrics['win_rate']}%`" if metrics["win_rate"] is not None else "Win rate: `n/a`",
