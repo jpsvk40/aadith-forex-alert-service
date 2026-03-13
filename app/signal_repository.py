@@ -310,27 +310,21 @@ def _day_bounds(target_date: date) -> tuple[datetime, datetime]:
 
 def _daily_counts(start: datetime, end: datetime) -> dict:
     with SessionLocal() as db:
-        buy_signals = db.query(SignalLog).filter(
-            SignalLog.timestamp >= start,
-            SignalLog.timestamp < end,
-            SignalLog.signal == "BUY",
-        ).count()
-        sell_signals = db.query(SignalLog).filter(
-            SignalLog.timestamp >= start,
-            SignalLog.timestamp < end,
-            SignalLog.signal == "SELL",
-        ).count()
-        telegram_sent = db.query(SignalLog).filter(
-            SignalLog.timestamp >= start,
-            SignalLog.timestamp < end,
-            SignalLog.telegram_sent == 1,
-        ).count()
         outcome_rows = db.query(SignalOutcome).filter(
             SignalOutcome.entry_timestamp >= start,
             SignalOutcome.entry_timestamp < end,
         ).all()
+        signal_log_ids = [row.signal_log_id for row in outcome_rows]
+        telegram_sent = 0
+        if signal_log_ids:
+            telegram_sent = db.query(SignalLog).filter(
+                SignalLog.id.in_(signal_log_ids),
+                SignalLog.telegram_sent == 1,
+            ).count()
 
-    total_signals = buy_signals + sell_signals
+    buy_signals = sum(1 for row in outcome_rows if row.signal == "BUY")
+    sell_signals = sum(1 for row in outcome_rows if row.signal == "SELL")
+    total_signals = len(outcome_rows)
     return _build_performance_dict(
         start.date().isoformat(),
         total_signals=total_signals,
@@ -352,20 +346,21 @@ def performance_summary(start_date: date, end_date: date) -> dict:
     _, end = _day_bounds(end_date)
 
     with SessionLocal() as db:
-        signal_rows = db.query(SignalLog).filter(
-            SignalLog.timestamp >= start,
-            SignalLog.timestamp < end,
-        ).all()
         outcome_rows = db.query(SignalOutcome).filter(
             SignalOutcome.entry_timestamp >= start,
             SignalOutcome.entry_timestamp < end,
         ).all()
+        signal_log_ids = [row.signal_log_id for row in outcome_rows]
+        telegram_sent = 0
+        if signal_log_ids:
+            telegram_sent = db.query(SignalLog).filter(
+                SignalLog.id.in_(signal_log_ids),
+                SignalLog.telegram_sent == 1,
+            ).count()
 
-    total_signals = len(signal_rows)
-    buy_signals = sum(1 for row in signal_rows if row.signal == "BUY")
-    sell_signals = sum(1 for row in signal_rows if row.signal == "SELL")
-    total_signals = buy_signals + sell_signals
-    telegram_sent = sum(1 for row in signal_rows if row.telegram_sent == 1)
+    buy_signals = sum(1 for row in outcome_rows if row.signal == "BUY")
+    sell_signals = sum(1 for row in outcome_rows if row.signal == "SELL")
+    total_signals = len(outcome_rows)
     metrics = _build_performance_dict(
         start_date.isoformat(),
         total_signals=total_signals,
