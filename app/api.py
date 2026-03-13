@@ -70,7 +70,22 @@ class ProviderStatus(BaseModel):
     error: Optional[str]
 
 
+class RootResponse(BaseModel):
+    service: str
+    status: str
+    docs_url: str
+
+
 # ── Endpoints ────────────────────────────────────────────────────────────────
+
+@app.get("/", response_model=RootResponse)
+def root():
+    return RootResponse(
+        service="forex-alert-service",
+        status="ok",
+        docs_url="/docs",
+    )
+
 
 @app.get("/health", response_model=HealthResponse)
 def health():

@@ -160,18 +160,32 @@ def signals_summary() -> list[dict]:
     One row per pair+timeframe: latest signal + indicator snapshot + age in seconds.
     Consumed by the React forex tab.
     """
-    from datetime import datetime, timezone as tz
     now = datetime.now(timezone.utc)
     rows = pairs_status()
+    summary_rows = []
     for r in rows:
         ts = r.get("timestamp")
         if ts:
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
             if ts.tzinfo is None:
                 ts = ts.replace(tzinfo=timezone.utc)
-            r["age_seconds"] = int((now - ts).total_seconds())
+            age_seconds = int((now - ts).total_seconds())
         else:
-            r["age_seconds"] = None
-    return rows
+            age_seconds = None
+
+        summary_rows.append({
+            "pair": r["pair"],
+            "timeframe": r["timeframe"],
+            "signal": r["signal"],
+            "entry_price": r["entry_price"],
+            "rsi": r["rsi"],
+            "ema9": r["ema9"],
+            "ema21": r["ema21"],
+            "timestamp": r.get("timestamp"),
+            "age_seconds": age_seconds,
+        })
+    return summary_rows
 
 
 def _row_to_dict(row: SignalLog) -> dict:
